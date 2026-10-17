@@ -182,10 +182,44 @@ jobs:
           } > dist/build-info.txt
           (cd dist && sha256sum * > SHA256SUMS)
 
-      - name: Upload kernel artifacts
+      - name: Upload compressed kernel image
         uses: actions/upload-artifact@v4
         with:
-          name: lenovo-sm7150-kernel-${{ github.run_number }}
-          path: dist/
+          name: lenovo-sm7150-Image-gz-${{ github.run_number }}
+          path: dist/Image.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload kernel image with appended DTB
+        uses: actions/upload-artifact@v4
+        with:
+          name: lenovo-sm7150-Image-gz-dtb-${{ github.run_number }}
+          path: dist/Image.gz-dtb
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload compiled DTB and DTBO files
+        uses: actions/upload-artifact@v4
+        with:
+          name: lenovo-sm7150-device-tree-blobs-${{ github.run_number }}
+          path: dist/device-tree-blobs.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload kernel configuration
+        uses: actions/upload-artifact@v4
+        with:
+          name: lenovo-sm7150-kernel-config-${{ github.run_number }}
+          path: dist/kernel.config
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build metadata and checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: lenovo-sm7150-build-metadata-${{ github.run_number }}
+          path: |
+            dist/build-info.txt
+            dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 14
