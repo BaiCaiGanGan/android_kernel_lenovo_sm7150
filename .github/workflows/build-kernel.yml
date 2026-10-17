@@ -169,7 +169,8 @@ jobs:
           tar -chzf dist/device-tree-blobs.tar.gz -T "$RUNNER_TEMP/dtb-files.txt"
 
           if cmp -s out/arch/arm64/boot/Image.gz out/arch/arm64/boot/Image.gz-dtb; then
-            echo "::warning::Image.gz-dtb is byte-identical to Image.gz; verify that the DTBs were appended."
+            echo "::error::Image.gz-dtb is byte-identical to Image.gz; DTBs were not appended."
+            exit 1
           fi
 
           {
