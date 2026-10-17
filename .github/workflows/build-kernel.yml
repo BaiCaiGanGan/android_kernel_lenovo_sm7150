@@ -148,12 +148,28 @@ jobs:
             cp out/arch/arm64/boot/Image.gz-dtb dist/
           fi
 
-          find out/arch/arm64/boot/dts -type f \
-            \( -name '*.dtb' -o -name '*.dtbo' \) -print > "$RUNNER_TEMP/dtb-files.txt"
-          if [[ -s "$RUNNER_TEMP/dtb-files.txt" ]]; then
-            tar -czf dist/device-tree-blobs.tar.gz -T "$RUNNER_TEMP/dtb-files.txt"
-          else
-            echo "Warning: no DTB/DTBO files were found."
+          # Kbuild may place compiled DTBs in the output tree or source tree
+          # depending on how this vendor 4.14 tree handles O= builds.
+          { find out arch/arm64/boot/dts \
+              \( -type f -o -type l \) \
+              \( -name '*.dtb' -o -name '*.dtbo' \) -print 2>/dev/null || true; } \
+              | sort -u > "$RUNNER_TEMP/dtb-files.txt"
+
+          DTB_COUNT="$(wc -l < "$RUNNER_TEMP/dtb-files.txt" | tr -d ' ')"
+          if [[ "$DTB_COUNT" -eq 0 ]]; then
+            echo "::error::No compiled DTB/DTBO files found after 'make dtbs'."
+            echo "Inspecting ARM64 boot outputs:"
+            find out/arch/arm64/boot arch/arm64/boot/dts -maxdepth 5 -type f \
+              \( -name '*.dtb' -o -name '*.dtbo' -o -name 'Image.gz*' \) -print 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Found $DTB_COUNT compiled DTB/DTBO file(s):"
+          cat "$RUNNER_TEMP/dtb-files.txt"
+          tar -chzf dist/device-tree-blobs.tar.gz -T "$RUNNER_TEMP/dtb-files.txt"
+
+          if cmp -s out/arch/arm64/boot/Image.gz out/arch/arm64/boot/Image.gz-dtb; then
+            echo "::warning::Image.gz-dtb is byte-identical to Image.gz; verify that the DTBs were appended."
           fi
 
           {
