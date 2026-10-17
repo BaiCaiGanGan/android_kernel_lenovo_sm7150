@@ -1,0 +1,174 @@
+name: Build Lenovo SM7150 Kernel
+
+on:
+  push:
+    branches:
+      - Android-11.0-rotation-fixed
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: "Config under arch/arm64/configs (e.g. j706f_defconfig)"
+        required: true
+        default: "j706f_defconfig"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernel-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ARM64 kernel
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+
+    steps:
+      - name: Check out kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential cpio flex git curl ca-certificates \
+            libelf-dev libssl-dev libncurses-dev python3 perl rsync tar \
+            unzip zip zstd device-tree-compiler
+
+      - name: Download Android-compatible toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/kernel-toolchains"
+          mkdir -p "$ROOT/clang" "$ROOT/gcc64" "$ROOT/gcc32"
+
+          # clang-r383902 is referenced by this kernel tree's build.config.common.
+          curl -fL --retry 3 \
+            'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-11.0.0_r28/clang-r383902.tar.gz' \
+            -o "$RUNNER_TEMP/clang-r383902.tar.gz"
+          tar -xzf "$RUNNER_TEMP/clang-r383902.tar.gz" -C "$ROOT/clang"
+
+          # GCC 4.9 cross tools matching this tree's CROSS_COMPILE prefixes.
+          curl -fL --retry 3 \
+            'https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android10-release.tar.gz' \
+            -o "$RUNNER_TEMP/gcc-aarch64.tar.gz"
+          tar -xzf "$RUNNER_TEMP/gcc-aarch64.tar.gz" -C "$ROOT/gcc64"
+
+          curl -fL --retry 3 \
+            'https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/android10-release.tar.gz' \
+            -o "$RUNNER_TEMP/gcc-arm32.tar.gz"
+          tar -xzf "$RUNNER_TEMP/gcc-arm32.tar.gz" -C "$ROOT/gcc32"
+
+          test -x "$ROOT/clang/bin/clang"
+          test -x "$ROOT/gcc64/bin/aarch64-linux-androidkernel-gcc"
+          test -x "$ROOT/gcc32/bin/arm-linux-androideabi-gcc"
+
+          echo "$ROOT/clang/bin" >> "$GITHUB_PATH"
+          echo "$ROOT/gcc64/bin" >> "$GITHUB_PATH"
+          echo "$ROOT/gcc32/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$ROOT/clang/lib64:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+
+          "$ROOT/clang/bin/clang" --version
+          "$ROOT/gcc64/bin/aarch64-linux-androidkernel-gcc" --version | sed -n '1p'
+          "$ROOT/gcc32/bin/arm-linux-androideabi-gcc" --version | sed -n '1p'
+
+      - name: Configure kernel
+        shell: bash
+        env:
+          REQUESTED_DEFCONFIG: ${{ inputs.defconfig || 'j706f_defconfig' }}
+        run: |
+          set -euo pipefail
+          DEFCONFIG="$REQUESTED_DEFCONFIG"
+
+          # Accept a defconfig name or a path such as vendor/atoll_defconfig.
+          if [[ ! "$DEFCONFIG" =~ ^([A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+_defconfig$ ]] || [[ "$DEFCONFIG" == *..* ]]; then
+            echo "Invalid defconfig path: $DEFCONFIG" >&2
+            exit 1
+          fi
+          if [[ ! -f "arch/arm64/configs/$DEFCONFIG" ]]; then
+            echo "Defconfig not found: arch/arm64/configs/$DEFCONFIG" >&2
+            echo "Available defconfigs:"
+            find arch/arm64/configs -type f -name '*_defconfig' -printf '%P\n' | sort
+            exit 1
+          fi
+
+          echo "Selected defconfig: $DEFCONFIG"
+          make O=out \
+            ARCH=arm64 \
+            CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-androidkernel- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            "$DEFCONFIG"
+          cp out/.config out/kernel.config
+
+      - name: Compile kernel and device trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAKE_ARGS=(
+            O=out
+            ARCH=arm64
+            CC=clang
+            LD=ld.lld
+            AR=llvm-ar
+            NM=llvm-nm
+            OBJCOPY=llvm-objcopy
+            OBJDUMP=llvm-objdump
+            STRIP=llvm-strip
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            CROSS_COMPILE=aarch64-linux-androidkernel-
+            CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          )
+
+          make -j"$(nproc --all)" "${MAKE_ARGS[@]}" Image.gz dtbs
+          make -j"$(nproc --all)" "${MAKE_ARGS[@]}" Image.gz-dtb
+
+          test -s out/arch/arm64/boot/Image.gz
+          test -s out/kernel.config
+
+      - name: Collect build artifacts
+        shell: bash
+        env:
+          BUILD_DEFCONFIG: ${{ inputs.defconfig || 'j706f_defconfig' }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp out/arch/arm64/boot/Image.gz dist/
+          cp out/kernel.config dist/kernel.config
+          if [[ -s out/arch/arm64/boot/Image.gz-dtb ]]; then
+            cp out/arch/arm64/boot/Image.gz-dtb dist/
+          fi
+
+          find out/arch/arm64/boot/dts -type f \
+            \( -name '*.dtb' -o -name '*.dtbo' \) -print > "$RUNNER_TEMP/dtb-files.txt"
+          if [[ -s "$RUNNER_TEMP/dtb-files.txt" ]]; then
+            tar -czf dist/device-tree-blobs.tar.gz -T "$RUNNER_TEMP/dtb-files.txt"
+          else
+            echo "Warning: no DTB/DTBO files were found."
+          fi
+
+          {
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Ref: $GITHUB_REF"
+            echo "Commit: $GITHUB_SHA"
+            echo "Defconfig: $BUILD_DEFCONFIG"
+            echo "Kernel version: $(make -s O=out kernelversion)"
+          } > dist/build-info.txt
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lenovo-sm7150-kernel-${{ github.run_number }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
