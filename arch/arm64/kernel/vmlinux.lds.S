@@ -254,7 +254,7 @@ SECTIONS
 
 	HEAD_SYMBOLS
 
-	.bss : {			/* bss segment		*/
+	.bss.rtic : {		/* isolated RTIC BSS segment */
          RTIC_BSS
 	}
 }
